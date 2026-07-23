@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AR Business Card</title>
+  
+  <!-- AR.js + NFT（画像認識）ライブラリの読み込み -->
+  <script src="https://cdn.jsdelivr.net/gh/aframevr/aframe@1.3.0/dist/aframe-master.min.js"></script>
+  <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar-nft.js"></script>
+
+  <style>
+    /* 読み込み中の表示 */
+    .arjs-loader {
+      height: 100%;
+      width: 100%;
+      position: absolute;
+      top: 0;
+      left: 0;
+      background-color: rgba(0, 0, 0, 0.8);
+      z-index: 9999;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    .arjs-loader div {
+      text-align: center;
+      font-size: 1.25em;
+      color: white;
+    }
+  </style>
+</head>
+<body style="margin: 0px; overflow: hidden;">
+
+  <!-- 読み込み中画面 -->
+  <div class="arjs-loader">
+    <div>名刺データを読み込んでいます...<br>カメラを名刺にかざしてください</div>
+  </div>
+
+  <!-- AR空間の設定 -->
+  <a-scene
+    vr-mode-ui="enabled: false;"
+    renderer="logarithmicDepthBuffer: true;"
+    embedded
+    arjs="trackingMethod: best; sourceType: webcam; debugUIEnabled: false;"
+  >
+    <a-assets>
+      <!-- 動画ファイル指定 -->
+      <video id="ar-video" src="./0723.mp4" loop crossorigin="anonymous" playsinline webkit-playsinline></video>
+    </a-assets>
+
+    <!-- 生成されたNFTデータ（moriwaki）を指定 -->
+    <a-nft
+      type="nft"
+      url="./moriwaki"
+      smooth="true"
+      smoothCount="10"
+      smoothTolerance=".01"
+      smoothThreshold="5"
+    >
+      <!-- 名刺の上に表示する動画（位置や大きさはテスト後に調整できます） -->
+      <a-video
+        src="#ar-video"
+        width="160"
+        height="90"
+        position="50 0 -100"
+        rotation="-90 0 0"
+      ></a-video>
+    </a-nft>
+
+    <a-entity camera></a-entity>
+  </a-scene>
+
+  <script>
+    // データの読み込み完了時にローダーを消す
+    window.addEventListener('arjs-nft-loaded', function (ev) {
+      document.querySelector('.arjs-loader').style.display = 'none';
+    });
+
+    const nftTarget = document.querySelector('a-nft');
+    const video = document.querySelector('#ar-video');
+
+    // 名刺を認識したときに動画再生
+    nftTarget.addEventListener('markerFound', function() {
+      video.play();
+    });
+
+    // 名刺からカメラが外れたときに一時停止
+    nftTarget.addEventListener('markerLost', function() {
+      video.pause();
+    });
+  </script>
+</body>
+</html>
