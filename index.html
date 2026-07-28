@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AR Business Card - 透過動画</title>
+  
+  <!-- A-Frame & AR.js NFT -->
+  <script src="https://cdn.jsdelivr.net/gh/aframevr/aframe@1.3.0/dist/aframe-master.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.5/aframe/build/aframe-ar-nft.js"></script>
+
+  <!-- ★A-Frame に「chromakey シェーダー」を正式登録（マテリアル差し替え方式ではない） -->
+  <script>
+    AFRAME.registerShader('chromakey', {
+      schema: {
+        src:        { type: 'map', is: 'texture' },
+        color:      { type: 'color',  default: '#00b140' },  /* 撮影時のグリーンバック色に近い値 */
+        similarity: { type: 'number', default: 0.40 },       /* この距離までを透明に */
+        smoothness: { type: 'number', default: 0.10 }        /* 透明境界のなめらかさ */
+      },
+
+      init: function (data) {
+        const color = new THREE.Color(data.color);
+
+        this.material = new THREE.ShaderMaterial({
+          uniforms: {
+            color:      { value: color },
+            texture:    { value: data.src },                  /* A-Frame が #ar-video から作ったテクスチャ */
+            similarity: { value: data.similarity },
+            smoothness: { value: data.smoothness }
+          },
+          vertexShader: `
+            varying vec2 vUv;
+            void main() {
+              vUv = uv;
+              gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+          `,
+          fragmentShader: `
+            uniform vec3      color;
+            uniform sampler2D texture;
+            uniform float     similarity;
+            uniform float     smoothness;
+            varying vec2      vUv;
+
+            void main() {
+              vec4 tex = texture2D(texture, vUv);
+              /* グリーンバックとの色距離が小さいほど透明に */
+              float d = distance(tex.rgb, color);
+              float alpha = smoothstep(similarity, similarity + smoothness, d);
+              gl_FragColor = vec4(tex.rgb, alpha);
+            }
+          `,
+          transparent: true,
+          side: THREE.DoubleSide
+        });
+
+        /* A-Frame の material パイプラインに正式に渡す（前回の失敗パターンではない） */
+        this.el.material = this.material;
+      },
+
+      update: function (data) {
+        if (!this.material) return;
+        this.material.uniforms.color.value.set(data.color);
+        this.material.uniforms.similarity.value = data.similarity;
+        this.material.uniforms.smoothness.value = data.smoothness;
+        if (data.src) this.material.uniforms.texture.value = data.src;
+      },
+
+      render: function () { /* no-op */ }
+    });
+  </script>
+
+  <style>
+    .arjs-loader {
+      height: 100%; width: 100%;
+      position: absolute; top: 0; left: 0;
+      background-color: rgba(0, 0, 0, 0.85);
+      z-index: 9999;
+      display: flex; flex-direction: column;
+      justify-content: center; align-items: center;
+      color: white; font-family: sans-serif;
+    }
+    .start-btn {
+      margin-top: 20px; padding: 14px 28px;
+      background-color: #007bff; color: white;
+      border: none; border-radius: 25px;
+      font-size: 1.1em; cursor: pointer; display: none;
+    }
+    .a-enter-vr-button { display: none !important; }
+  </style>
+</head>
+<body style="margin: 0px; overflow: hidden;">
+
+  <div class="arjs-loader" id="loader">
+    <div id="loading-text">名刺データを読み込んでいます...</div>
+    <button class="start-btn" id="start-btn">ARを開始する</button>
+  </div>
+
+  <a-scene
+    vr-mode-ui="enabled: false;"
+    renderer="logarithmicDepthBuffer: true;"
+    embedded
+    arjs="trackingMethod: best; sourceType: webcam; debugUIEnabled: false;"
+  >
+    <a-assets>
+      <video id="ar-video" src="./0723.mp4" loop crossorigin="anonymous"
+             playsinline webkit-playsinline muted preload="metadata"></video>
+    </a-assets>
+
+    <!-- smoothCount を 30 に増やしてブレを抑える（★ブレ防止） -->
+    <a-nft
+      type="nft"
+      url="https://shou1512.github.io/ar-card/moriwaki"
+      smooth="true"
+      smoothCount="30"
+      smoothTolerance=".001"
+      smoothThreshold="2"
+    >
+      <!-- ★名刺の上で再生されるよう Y を 60 に。Z を -1 でほんのり手前表示。
+           グリーンバック透過は chromakey シェーダーが担当。a-video は使わない -->
+      <a-entity
+        geometry="primitive: plane; width: 220; height: 124"
+        material="shader: chromakey;
+                  src: #ar-video;
+                  color: #00b140;
+                  similarity: 0.40;
+                  smoothness: 0.10;
+                  transparent: true;
+                  side: double"
+        position="0 60 -1"
+        rotation="0 0 0"
+      ></a-entity>
+    </a-nft>
+
+    <a-entity camera></a-entity>
+  </a-scene>
+
+  <script>
+    const loader      = document.getElementById('loader');
+    const loadingText = document.getElementById('loading-text');
+    const startBtn    = document.getElementById('start-btn');
+    const nftTarget   = document.querySelector('a-nft');
+    const video       = document.querySelector('#ar-video');
+
+    function showStartButton() {
+      loadingText.innerHTML = "準備完了！<br>ボタンを押して名刺にかざしてください";
+      startBtn.style.display = 'block';
+    }
+
+    window.addEventListener('arjs-nft-loaded', showStartButton);
+
+    document.querySelector('a-scene').addEventListener('loaded', function () {
+      setTimeout(function () {
+        if (startBtn.style.display !== 'block') showStartButton();
+      }, 2000);
+    });
+
+    startBtn.addEventListener('click', function () {
+      video.muted = false;
+      video.play().then(() => {
+        video.pause();                 /* iOS 等の自動再生制限 “解錠” だけ行う */
+        video.currentTime = 0;
+        loader.style.display = 'none';
+      }).catch(err => {
+        console.log('Video play error:', err);
+        video.muted = true;            /* 失敗時は無音で続行 */
+        video.play().then(() => video.pause()).catch(() => {});
+        loader.style.display = 'none';
+      });
+    });
+
+    nftTarget.addEventListener('markerFound', function () {
+      console.log('Marker Found!');
+      try { video.currentTime = 0; } catch (e) {}
+      video.play().catch(e => console.log('Play error:', e));
+    });
+
+    nftTarget.addEventListener('markerLost', function () {
+      console.log('Marker Lost!');
+      video.pause();
+    });
+  </script>
+</body>
+</html>
