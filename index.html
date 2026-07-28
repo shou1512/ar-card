@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AR Business Card</title>
+
+  <script src="https://cdn.jsdelivr.net/gh/aframevr/aframe@1.3.0/dist/aframe-master.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.5/aframe/build/aframe-ar-nft.js"></script>
+
+  <!-- ★スマホだけでログ確認したい時は下の 2 行のコメントを外す
+  <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
+  <script>eruda.init();</script>
+  -->
+
+  <style>
+    .overlay {
+      position:absolute; top:0; left:0;
+      width:100%; height:100%;
+      background:rgba(0,0,0,.85); z-index:9999;
+      display:flex; flex-direction:column;
+      justify-content:center; align-items:center;
+      color:#fff; font-family:sans-serif; text-align:center;
+      padding:0 24px;
+    }
+    .overlay.hidden { display:none; }
+    .btn {
+      margin-top:20px; padding:14px 28px;
+      background:#007bff; color:#fff; border:none; border-radius:25px;
+      font-size:1.1em; cursor:pointer;
+      -webkit-tap-highlight-color:transparent; touch-action:manipulation;
+    }
+    .btn.audio-btn { background:#28a745; }
+
+    #dbg {
+      position:absolute; top:10px; left:10px;
+      background:rgba(0,0,0,.75); color:#ddd;
+      padding:8px 12px; font-family:monospace; font-size:12px;
+      z-index:10000; border:1px solid #555; border-radius:4px;
+      line-height:1.5; min-width:170px;
+    }
+    #dbg .ok { color:#4f4; }
+    #dbg .err { color:#f55; }
+  </style>
+</head>
+<body style="margin:0; overflow:hidden;">
+
+  <div class="overlay" id="start-overlay">
+    <div id="loading-text">名刺データを読み込んでいます...</div>
+    <button class="btn" id="start-btn" style="display:none;">🎬 ARを開始する</button>
+  </div>
+
+  <div class="overlay hidden" id="audio-overlay">
+    <div>🔇 音声はまだミュートです</div>
+    <button class="btn audio-btn" id="audio-btn">🔊 音声を有効にする</button>
+  </div>
+
+  <div id="dbg">
+    <div>Marker:  <span id="dbg-marker" class="err">未認識</span></div>
+    <div>Plane:   <span id="dbg-mat"    class="err">未</span></div>
+    <div>readySt: <span id="dbg-rs">-</span></div>
+    <div>paused:  <span id="dbg-paused">-</span></div>
+    <div>curr:    <span id="dbg-ct">-</span></div>
+    <div>Chroma:  <span id="dbg-chroma" class="err">停止</span></div>
+  </div>
+
+  <a-scene
+    vr-mode-ui="enabled: false;"
+    renderer="logarithmicDepthBuffer: true; alpha: false; antialias: true;"
+    embedded
+    arjs="trackingMethod: best; sourceType: webcam; debugUIEnabled: false;"
+  >
+    <a-assets>
+      <!-- ★ crossorigin を削除（GitHub Pages = same-origin で不要、CORS taint を避ける） -->
+      <video id="ar-video" src="./0723.mp4" loop
+             playsinline webkit-playsinline
+             muted preload="auto"></video>
+    </a-assets>
+
+    <a-nft
+      id="nft"
+      type="nft"
+      url="https://shou1512.github.io/ar-card/moriwaki"
+      smooth="true" smoothCount="20" smoothTolerance=".001" smoothThreshold="2"
+    >
+      <a-plane color="#ff2222" width="12" height="12"
+               position="0 90 -2" rotation="-90 0 0"></a-plane>
+
+      <a-plane id="video-plane"
+               width="220" height="124"
+               position="0 60 6"
+               rotation="0 0 0"></a-plane>
+    </a-nft>
+
+    <a-entity camera></a-entity>
+  </a-scene>
+
+  <script>
+    const CONFIG = {
+      chroma: { r: 0x43, g: 0x71, b: 0x2f },  // #43712f（実機の背景色）
+      chromaDistance: 95,                     // 距離 < 95 → 完全透明
+      chromaSmooth:   35,                     // 95〜130 → グラデ境界
+      darknessG: 55,                          // ★ G<55 は無条件で不透明（暗肌保護）
+      canvasW: 640,
+      canvasH: 360,
+      damping: 0.25,
+    };
+
+    /* DOM 参照 */
+    const startOverlay = document.getElementById('start-overlay');
+    const loadingText  = document.getElementById('loading-text');
+    const startBtn     = document.getElementById('start-btn');
+    const audioOverlay = document.getElementById('audio-overlay');
+    const audioBtn     = document.getElementById('audio-btn');
+    const nftTarget    = document.getElementById('nft');
+    const videoEl      = document.getElementById('ar-video');
+    const planeEl      = document.getElementById('video-plane');
+    const dbgMarker    = document.getElementById('dbg-marker');
+    const dbgMat       = document.getElementById('dbg-mat');
+    const dbgChroma    = document.getElementById('dbg-chroma');
+
+    /* キャンバス準備 */
+    const canvas = document.createElement('canvas');
+    canvas.width = CONFIG.canvasW;
+    canvas.height = CONFIG.canvasH;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    let canvasTex = null;
+    let planeMesh = null;
+    let dampedInit = false;
+    const dampedPos  = { x: 0, y: 60, z: 6 };
+    const dampedQuat = new THREE.Quaternion();
+
+    function attach() {
+      const mesh = planeEl.getObject3D('mesh');
+      if (!mesh) { setTimeout(attach, 50); return; }
+      planeMesh = mesh;
+
+      canvasTex = new THREE.CanvasTexture(canvas);
+      canvasTex.minFilter = THREE.LinearFilter;
+      canvasTex.magFilter = THREE.LinearFilter;
+      canvasTex.format    = THREE.RGBAFormat;
+
+      mesh.material = new THREE.MeshBasicMaterial({
+        map: canvasTex, transparent: true,
+        side: THREE.DoubleSide, depthWrite: false,
+      });
+      mesh.renderOrder = 10;
+
+      dbgMat.textContent = 'OK';
+      dbgMat.className   = 'ok';
+      startChroma();
+      startDamp();
+    }
+
+    function startChroma() {
+      function tick() {
+        if (canvasTex && videoEl.readyState >= 2 && videoEl.currentTime > 0) {
+          try {
+            ctx.drawImage(videoEl, 0, 0, CONFIG.canvasW, CONFIG.canvasH);
+            const img  = ctx.getImageData(0, 0, CONFIG.canvasW, CONFIG.canvasH);
+            const data = img.data;
+            const cr = CONFIG.chroma.r, cg = CONFIG.chroma.g, cb = CONFIG.chroma.b;
+            const distThr = CONFIG.chromaDistance;
+            const smt = CONFIG.chromaSmooth;
+            const minG = CONFIG.darknessG;
+
+            let transparentPixels = 0;
+
+            for (let i = 0; i < data.length; i += 4) {
+              const r = data[i], g = data[i+1], b = data[i+2];
+
+              // ★ 暗さガード。今回の素材は顔が暗いので肌・影を透過しないための主フィルタ
+              if (g < minG) continue;
+
+              const dr = r - cr, dg = g - cg, db = b - cb;
+              const dist = Math.sqrt(dr*dr + dg*dg + db*db);
+
+              if (dist < distThr) {
+                data[i+3] = 0;
+                transparentPixels++;
+              } else if (dist < distThr + smt) {
+                data[i+3] = (((dist - distThr) / smt) * 255) | 0;
+              }
+            }
+            ctx.putImageData(img, 0, 0);
+            canvasTex.needsUpdate = true;
+
+            // 動作確認用:毎フレーム緑の透過率を表示
+            const total = data.length / 4;
+            const ratio = (transparentPixels / total * 100) | 0;
+            dbgChroma.textContent = ratio + '% 透過';
+            dbgChroma.className = 'ok';
+          } catch (e) {
+            // SecurityError 等は無視してループは止めない
+            dbgChroma.textContent = 'err';
+            dbgChroma.className = 'err';
+            console.log('Chroma error:', e.message);
+          }
+        }
+        requestAnimationFrame(tick);
+      }
+      tick();
+    }
+
+    function startDamp() {
+      const lerp = (a,b,t) => a + (b - a)*t;
+      function tick() {
+        if (!planeMesh) { requestAnimationFrame(tick); return; }
+        planeEl.object3D.updateMatrixWorld(true);
+        const tPos = new THREE.Vector3();
+        const tQuat = new THREE.Quaternion();
+        planeEl.object3D.getWorldPosition(tPos);
+        planeEl.object3D.getWorldQuaternion(tQuat);
+
+        if (!dampedInit) {
+          dampedPos.x = tPos.x; dampedPos.y = tPos.y; dampedPos.z = tPos.z;
+          dampedQuat.copy(tQuat); dampedInit = true;
+        } else {
+          dampedPos.x = lerp(dampedPos.x, tPos.x, CONFIG.damping);
+          dampedPos.y = lerp(dampedPos.y, tPos.y, CONFIG.damping);
+          dampedPos.z = lerp(dampedPos.z, tPos.z, CONFIG.damping);
+          dampedQuat.slerp(tQuat, CONFIG.damping);
+        }
+        planeMesh.position.set(dampedPos.x, dampedPos.y, dampedPos.z);
+        planeMesh.quaternion.copy(dampedQuat);
+        requestAnimationFrame(tick);
+      }
+      tick();
+    }
+
+    function showStartButton() {
+      loadingText.innerHTML = '準備完了！<br>ボタンを押して名刺にかざしてください';
+      startBtn.style.display = 'block';
+    }
+    window.addEventListener('arjs-nft-loaded', showStartButton);
+    document.querySelector('a-scene').addEventListener('loaded', function () {
+      setTimeout(function () {
+        if (startBtn.style.display !== 'block') showStartButton();
+      }, 2000);
+    });
+
+    startBtn.addEventListener('click', function () {
+      videoEl.muted = true;
+      videoEl.play().then(() => {
+        videoEl.pause(); videoEl.currentTime = 0;
+        startOverlay.classList.add('hidden');
+        audioOverlay.classList.remove('hidden');
+      }).catch(err => {
+        console.log('Start play error:', err);
+        startOverlay.classList.add('hidden');
+      });
+    });
+
+    audioBtn.addEventListener('click', function () {
+      videoEl.muted = false;
+      videoEl.play().then(() => audioOverlay.classList.add('hidden'))
+        .catch(err => alert('音声を開始できませんでした: ' + err.message));
+    });
+
+    nftTarget.addEventListener('markerFound', function () {
+      dbgMarker.textContent = '認識中'; dbgMarker.className = 'ok';
+      try { videoEl.currentTime = 0; } catch (e) {}
+      videoEl.play().catch(() => {});
+    });
+    nftTarget.addEventListener('markerLost', function () {
+      dbgMarker.textContent = '未認識'; dbgMarker.className = 'err';
+      videoEl.pause();
+    });
+
+    planeEl.addEventListener('loaded', attach);
+
+    setInterval(() => {
+      document.getElementById('dbg-rs').textContent     = videoEl.readyState;
+      document.getElementById('dbg-paused').textContent = String(videoEl.paused);
+      document.getElementById('dbg-ct').textContent     = videoEl.currentTime.toFixed(2);
+    }, 200);
+  </script>
+</body>
+</html>
