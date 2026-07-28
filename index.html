@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AR Business Card</title>
+  
+  <!-- A-Frame & AR.js NFT -->
+  <script src="https://cdn.jsdelivr.net/gh/aframevr/aframe@1.3.0/dist/aframe-master.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.5/aframe/build/aframe-ar-nft.js"></script>
+
+  <!-- 森脇さんの緑背景動画用の透過コンポーネント -->
+  <script>
+    AFRAME.registerComponent('chromakey', {
+      schema: {
+        color: {type: 'color', default: '#3B9338'}, // 動画の実際の緑色に調整
+        similarity: {type: 'number', default: 0.42}  // 許容範囲
+      },
+      init: function () {
+        const video = document.querySelector('#ar-video');
+        const texture = new THREE.VideoTexture(video);
+        texture.minFilter = THREE.LinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+
+        const material = new THREE.ShaderMaterial({
+          uniforms: {
+            color: {type: 'c', value: new THREE.Color(this.data.color)},
+            texture: {type: 't', value: texture},
+            similarity: {type: 'f', value: this.data.similarity}
+          },
+          vertexShader: `
+            varying vec2 vUv;
+            void main() {
+              vUv = uv;
+              gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+          `,
+          fragmentShader: `
+            uniform vec3 color;
+            uniform sampler2D texture;
+            uniform float similarity;
+            varying vec2 vUv;
+            void main() {
+              vec4 tColor = texture2D(texture, vUv);
+              
+              // 背景の緑色との差を計算して透明化
+              float diff = distance(tColor.rgb, color);
+              if (diff < similarity) {
+                discard;
+              } else {
+                // 胸下のカットラインを滑らかにフェードアウト
+                float fade = smoothstep(0.0, 0.15, vUv.y);
+                tColor.a *= fade;
+                gl_FragColor = tColor;
+              }
+            }
+          `,
+          transparent: true
+        });
+
+        this.el.getObject3D('mesh').material = material;
+      },
+      tick: function () {
+        // 毎フレーム動画テクスチャを更新
+        const mesh = this.el.getObject3D('mesh');
+        if (mesh && mesh.material && mesh.material.uniforms.texture.value) {
+          mesh.material.uniforms.texture.value.needsUpdate = true;
+        }
+      }
+    });
+  </script>
+
+  <style>
+    .arjs-loader {
+      height: 100%;
+      width: 100%;
+      position: absolute;
+      top: 0;
+      left: 0;
+      background-color: rgba(0, 0, 0, 0.8);
+      z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      color: white;
+      font-family: sans-serif;
+    }
+    .start-btn {
+      margin-top: 20px;
+      padding: 12px 24px;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      border-radius: 25px;
+      font-size: 1.1em;
+      cursor: pointer;
+      display: none;
+    }
+  </style>
+</head>
+<body style="margin: 0px; overflow: hidden;">
+
+  <!-- スタート/ローディング画面 -->
+  <div class="arjs-loader" id="loader">
+    <div id="loading-text">名刺データを読み込んでいます...</div>
+    <button class="start-btn" id="start-btn">ARを開始する</button>
+  </div>
+
+  <a-scene
+    vr-mode-ui="enabled: false;"
+    renderer="logarithmicDepthBuffer: true; alpha: true;"
+    embedded
+    arjs="trackingMethod: best; sourceType: webcam; debugUIEnabled: false;"
+  >
+    <a-assets>
+      <video id="ar-video" src="./0723.mp4" loop autoplay muted playsinline webkit-playsinline crossorigin="anonymous"></video>
+    </a-assets>
+
+    <a-nft
+      type="nft"
+      url="https://shou1512.github.io/ar-card/moriwaki"
+      smooth="true"
+      smoothCount="10"
+      smoothTolerance=".01"
+      smoothThreshold="5"
+    >
+      <!-- 
+        1. width="90" height="160" で縦長動画のアスペクト比に修正
+        2. position="80 50 -20" で名刺の後ろから立体的に立つ位置に調整
+      -->
+      <a-video
+        src="#ar-video"
+        width="90"
+        height="160"
+        position="80 50 -20"
+        rotation="0 0 0"
+        chromakey
+      ></a-video>
+    </a-nft>
+
+    <a-entity camera></a-entity>
+  </a-scene>
+
+  <script>
+    const loader = document.getElementById('loader');
+    const loadingText = document.getElementById('loading-text');
+    const startBtn = document.getElementById('start-btn');
+    const nftTarget = document.querySelector('a-nft');
+    const video = document.querySelector('#ar-video');
+
+    function showStartButton() {
+      loadingText.innerHTML = "準備完了！<br>ボタンを押してカメラにかざしてください";
+      startBtn.style.display = 'block';
+    }
+
+    window.addEventListener('arjs-nft-loaded', showStartButton);
+    
+    document.querySelector('a-scene').addEventListener('loaded', function () {
+      setTimeout(function() {
+        if (startBtn.style.display !== 'block') {
+          showStartButton();
+        }
+      }, 2000);
+    });
+
+    // ボタンタップで自動再生ブロックを確実に解除
+    startBtn.addEventListener('click', function() {
+      video.muted = true;
+      video.play().then(() => {
+        video.pause();
+        loader.style.display = 'none';
+      }).catch(err => {
+        console.log("Video play error:", err);
+        loader.style.display = 'none';
+      });
+    });
+
+    // マーカー認識時
+    nftTarget.addEventListener('markerFound', function() {
+      console.log('Marker Found!');
+      video.muted = true;
+      video.play().catch(e => console.log("Play error:", e));
+    });
+
+    // マーカー見失い時
+    nftTarget.addEventListener('markerLost', function() {
+      console.log('Marker Lost!');
+      video.pause();
+    });
+  </script>
+</body>
+</html>
